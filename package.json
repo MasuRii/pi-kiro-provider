@@ -1,0 +1,71 @@
+{
+  "name": "pi-kiro-provider",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Pi extension provider for Kiro's AWS CodeWhisperer streaming API.",
+  "type": "module",
+  "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "src",
+    "config/config.example.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck",
+    "lint": "node scripts/audit-terminal.mjs",
+    "test": "node scripts/run-tests.mjs",
+    "check": "npm run typecheck && npm run --silent lint && npm run test && npm run build",
+    "package:dry-run": "npm pack --dry-run",
+    "prepublishOnly": "npm run check"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "pi-coding-agent",
+    "kiro",
+    "provider",
+    "ai-provider",
+    "oauth",
+    "codewhisperer",
+    "amazon-q"
+  ],
+  "author": "MasuRii",
+  "license": "MIT",
+  "homepage": "https://github.com/MasuRii/pi-kiro-provider#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MasuRii/pi-kiro-provider.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MasuRii/pi-kiro-provider/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "^0.74.0 || ^0.75.0",
+    "@earendil-works/pi-coding-agent": "^0.74.0 || ^0.75.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "typescript": "^6.0.3",
+    "@earendil-works/pi-ai": "^0.75.5",
+    "@earendil-works/pi-coding-agent": "^0.75.5"
+  }
+}
