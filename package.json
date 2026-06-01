@@ -1,6 +1,6 @@
 {
   "name": "pi-kiro-provider",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "description": "Pi extension provider for Kiro's AWS CodeWhisperer streaming API.",
   "type": "module",
@@ -56,8 +56,8 @@
     "node": ">=20"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^0.74.0 || ^0.75.0",
-    "@earendil-works/pi-coding-agent": "^0.74.0 || ^0.75.0"
+    "@earendil-works/pi-ai": "^0.74.0 || ^0.75.0 || ^0.77.0 || ^0.78.0",
+    "@earendil-works/pi-coding-agent": "^0.74.0 || ^0.75.0 || ^0.77.0 || ^0.78.0"
   },
   "publishConfig": {
     "access": "public"
@@ -65,7 +65,7 @@
   "devDependencies": {
     "@types/node": "^25.9.1",
     "typescript": "^6.0.3",
-    "@earendil-works/pi-ai": "^0.75.5",
-    "@earendil-works/pi-coding-agent": "^0.75.5"
+    "@earendil-works/pi-ai": "^0.78.0",
+    "@earendil-works/pi-coding-agent": "^0.78.0"
   }
 }

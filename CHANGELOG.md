@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-01
+
+### Added
+- Added lazy loading for Kiro OAuth and streaming modules to reduce startup cost.
+
+### Changed
+- Widened Pi peer dependency compatibility to include Pi 0.77.x and 0.78.x.
+
+### Fixed
+- Corrected the default Kiro API key placeholder to reference `$KIRO_ACCESS_TOKEN` consistently in config and docs.
+
 ## [0.1.0] - 2026-05-27
 
 ### Added
