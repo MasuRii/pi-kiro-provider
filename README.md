@@ -62,7 +62,7 @@ Minimal default-compatible configuration:
   "displayName": "Kiro",
   "upstreamUrl": "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse",
   "endpoint": "codewhisperer",
-  "apiKey": "KIRO_ACCESS_TOKEN",
+  "apiKey": "$KIRO_ACCESS_TOKEN",
   "requestTimeoutMs": 600000,
   "profileArn": "",
   "headers": {},
@@ -108,7 +108,7 @@ Minimal default-compatible configuration:
 | `displayName` | string | `Kiro` | Human-readable provider name shown by Pi. |
 | `upstreamUrl` | string | CodeWhisperer generateAssistantResponse endpoint | Streaming API endpoint. |
 | `endpoint` | `codewhisperer` \| `amazonq` | inferred from `upstreamUrl` | Controls upstream request/response formatting. |
-| `apiKey` | string | `KIRO_ACCESS_TOKEN` | Environment variable name used by provider metadata. |
+| `apiKey` | string | `$KIRO_ACCESS_TOKEN` | Environment variable reference used by provider metadata. |
 | `requestTimeoutMs` | number | `600000` | Request timeout for streaming and OAuth calls. |
 | `profileArn` | string | empty | Optional Kiro profile ARN sent as `x-kiro-profile-arn`. |
 | `headers` | object | `{}` | Additional non-authorization headers sent upstream. |

@@ -360,7 +360,7 @@ export function loadConfig(extensionRoot: string): ConfigLoadResult {
       displayName: stringOr(raw.displayName, "Kiro"),
       upstreamUrl,
       endpoint: endpointOr(raw.endpoint, upstreamUrl),
-      apiKey: stringOr(raw.apiKey, "KIRO_ACCESS_TOKEN"),
+      apiKey: stringOr(raw.apiKey, "$KIRO_ACCESS_TOKEN"),
       requestTimeoutMs: numberOr(raw.requestTimeoutMs, 600_000),
       profileArn: optionalString(raw.profileArn),
       headers: sanitizeHeaderConfig(stringRecordOr(raw.headers), warnings, "headers") ?? {},
