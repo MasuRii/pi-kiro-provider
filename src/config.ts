@@ -200,13 +200,17 @@ function inputOr(value: unknown, fallback: Array<"text" | "image">): Array<"text
   return parsed.length > 0 ? parsed : [...fallback];
 }
 
+function nonNegativeCostOr(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
 function costOr(value: unknown, fallback: ProviderModelConfig["cost"]): ProviderModelConfig["cost"] {
   if (!isRecord(value)) return { ...fallback };
   return {
-    input: typeof value.input === "number" ? value.input : fallback.input,
-    output: typeof value.output === "number" ? value.output : fallback.output,
-    cacheRead: typeof value.cacheRead === "number" ? value.cacheRead : fallback.cacheRead,
-    cacheWrite: typeof value.cacheWrite === "number" ? value.cacheWrite : fallback.cacheWrite,
+    input: nonNegativeCostOr(value.input, fallback.input),
+    output: nonNegativeCostOr(value.output, fallback.output),
+    cacheRead: nonNegativeCostOr(value.cacheRead, fallback.cacheRead),
+    cacheWrite: nonNegativeCostOr(value.cacheWrite, fallback.cacheWrite),
   };
 }
 
@@ -223,6 +227,7 @@ function promptCachingOr(value: unknown, fallback?: KiroPromptCachingConfig): Ki
   if (!isRecord(value)) return fallback ? { ...fallback } : undefined;
   if (typeof value.supportsPromptCaching !== "boolean") return fallback ? { ...fallback } : undefined;
   const output: KiroPromptCachingConfig = { supportsPromptCaching: value.supportsPromptCaching };
+  if (!output.supportsPromptCaching) return output;
   const maximumCacheCheckpointsPerRequest = numberOr(value.maximumCacheCheckpointsPerRequest, 0);
   const minimumTokensPerCacheCheckpoint = numberOr(value.minimumTokensPerCacheCheckpoint, 0);
   if (maximumCacheCheckpointsPerRequest > 0) output.maximumCacheCheckpointsPerRequest = maximumCacheCheckpointsPerRequest;

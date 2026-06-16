@@ -114,20 +114,37 @@ export function parseEventFrame(data: Uint8Array, logger: DebugLogger): EventFra
     const headers: Record<string, string> = {};
     let offset = 12;
     const headerEnd = 12 + headersLength;
-    while (offset < headerEnd && offset < data.length) {
+    while (offset < headerEnd) {
       const nameLength = data[offset];
       offset += 1;
-      if (offset + nameLength > data.length) break;
+      if (offset + nameLength > headerEnd) {
+        logger.warn("eventstream_invalid_header", { reason: "name_length_exceeds_header_section", offset, nameLength, headersLength });
+        return null;
+      }
 
       const name = TEXT_DECODER.decode(data.subarray(offset, offset + nameLength));
       offset += nameLength;
+      if (offset >= headerEnd) {
+        logger.warn("eventstream_invalid_header", { reason: "missing_header_type", offset, name, headersLength });
+        return null;
+      }
       const headerType = data[offset];
       offset += 1;
 
-      if (headerType !== 7 || offset + 2 > data.length) break;
+      if (headerType !== 7) {
+        logger.warn("eventstream_invalid_header", { reason: "unsupported_header_type", offset, name, headerType });
+        return null;
+      }
+      if (offset + 2 > headerEnd) {
+        logger.warn("eventstream_invalid_header", { reason: "missing_string_length", offset, name, headersLength });
+        return null;
+      }
       const valueLength = (data[offset] << 8) | data[offset + 1];
       offset += 2;
-      if (offset + valueLength > data.length) break;
+      if (offset + valueLength > headerEnd) {
+        logger.warn("eventstream_invalid_header", { reason: "value_length_exceeds_header_section", offset, name, valueLength, headersLength });
+        return null;
+      }
 
       headers[name] = TEXT_DECODER.decode(data.subarray(offset, offset + valueLength));
       offset += valueLength;
