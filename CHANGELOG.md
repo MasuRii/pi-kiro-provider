@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-03
+
+### Changed
+- Widened Pi peer dependency ranges to 0.80 and added security dependency overrides. ([ce50099](https://github.com/MasuRii/pi-kiro-provider/commit/ce50099c1071da42f69a2c637bf124ea4634ff12))
+- Extracted shared credentials and HTTP utilities to reduce duplication. ([1c2fbe3](https://github.com/MasuRii/pi-kiro-provider/commit/1c2fbe34689f92794bff56ca7f4fc372fcf69b16))
+
 ## [0.2.1] - 2026-06-16
 
 ### Fixed
