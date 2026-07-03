@@ -1,12 +1,19 @@
+<div align="center">
+
 # pi-kiro-provider
 
-[![npm version](https://img.shields.io/npm/v/pi-kiro-provider?style=flat-square)](https://www.npmjs.com/package/pi-kiro-provider) [![License](https://img.shields.io/github/license/MasuRii/pi-kiro-provider?style=flat-square)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/pi-kiro-provider?style=for-the-badge)](https://www.npmjs.com/package/pi-kiro-provider)
+[![License](https://img.shields.io/github/license/MasuRii/pi-kiro-provider?style=for-the-badge)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=for-the-badge)]()
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y8Y01PSSVR)
 
 `pi-kiro-provider` is a Pi extension that registers Kiro as a streaming AI provider backed by Kiro's AWS CodeWhisperer-compatible API and OAuth flow.
-
 - **Provider ID:** `kiro`
 - **npm:** https://www.npmjs.com/package/pi-kiro-provider
 - **GitHub:** https://github.com/MasuRii/pi-kiro-provider
+
+</div>
 
 ## Features
 
@@ -139,6 +146,13 @@ The package metadata follows the same publish-ready shape used by established Pi
 - runtime `config.json`, `debug/`, test artifacts, package lock, and local metadata excluded from npm publication
 
 Do not publish, push, or tag until the GitHub/npm release review is complete.
+
+## Related Pi Extensions
+
+- [pi-multi-auth](https://github.com/MasuRii/pi-multi-auth) — Multi-provider credential management, OAuth login, and account rotation
+- [pi-model-discovery](https://github.com/MasuRii/pi-model-discovery) — Provider model discovery, enrichment, and dynamic registration
+- [pi-fast-mode](https://github.com/MasuRii/pi-fast-mode) — Fast-mode toggles and priority service tier injection
+- [pi-model-profiles](https://github.com/MasuRii/pi-model-profiles) — Whole-agent model frontmatter snapshot management
 
 ## License
 
