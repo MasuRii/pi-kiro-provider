@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
 import { omitAuthorizationHeaders } from "./headers.js";
+import { isRecord, optionalString, positiveFiniteNumber as numberOr } from "./shared/index.js";
 
 export const KIRO_API = "kiro" as const;
 
@@ -142,16 +143,8 @@ const DEFAULT_OAUTH_CONFIG: KiroOAuthConfig = {
 
 const THINKING_LEVEL_KEYS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
 function stringOr(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function booleanOr(value: unknown, fallback: boolean): boolean {
@@ -160,10 +153,6 @@ function booleanOr(value: unknown, fallback: boolean): boolean {
 
 function optionalBoolean(value: unknown, fallback: boolean | undefined): boolean | undefined {
   return typeof value === "boolean" ? value : fallback;
-}
-
-function numberOr(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 function stringArrayOr(value: unknown, fallback: string[]): string[] {
@@ -307,7 +296,7 @@ function normalizeModel(rawModel: unknown, defaults: Omit<KiroProviderModelConfi
 
 function readRawConfig(extensionRoot: string, warnings: string[]): Record<string, unknown> {
   try {
-    const parsed = JSON.parse(readFileSync(join(extensionRoot, "config.json"), "utf-8"));
+    const parsed = JSON.parse(readFileSync(join(extensionRoot, "config.json"), "utf-8")) as unknown;
     if (isRecord(parsed)) return parsed;
     warnings.push("config.json root must be an object; using defaults.");
   } catch (error) {

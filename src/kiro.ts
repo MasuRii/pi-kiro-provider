@@ -9,6 +9,7 @@ import {
   type Context,
   type ImageContent,
   type Model,
+  type ProviderHeaders,
   type SimpleStreamOptions,
   type TextContent,
   type Tool,
@@ -21,6 +22,7 @@ import { redactSensitiveString } from "./debug-logger.js";
 import type { DebugLogger } from "./debug-logger.js";
 import { ByteQueue, parseEventFrame, type JsonRecord } from "./eventstream.js";
 import { omitAuthorizationHeaders } from "./headers.js";
+import { isRecord, optionalString, KIRO_PROFILE_ARN_HEADER, readJsonResponse } from "./shared/index.js";
 
 interface KiroRuntimeState {
   cwd?: string;
@@ -107,7 +109,6 @@ const KIRO_CODEWHISPERER_SDK_USER_AGENT = "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0";
 const KIRO_CODEWHISPERER_AMZ_USER_AGENT = "aws-sdk-js/3.0.0 kiro-ide/1.0.0";
 const KIRO_Q_SDK_USER_AGENT = "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.14474 os/windows lang/rust/1.92.0 md/appVersion-2.3.0 app/AmazonQ-For-CLI";
 const KIRO_Q_AMZ_USER_AGENT = "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.14474 os/windows lang/rust/1.92.0 m/F app/AmazonQ-For-CLI";
-const KIRO_PROFILE_ARN_HEADER = "x-kiro-profile-arn";
 const KIRO_CLI_CONTEXT_BLOCK_PATTERN = /--- CONTEXT ENTRY BEGIN ---[\s\S]*?--- CONTEXT ENTRY END ---\s*/g;
 const KIRO_CLI_USER_MESSAGE_PATTERN = /--- USER MESSAGE BEGIN ---([\s\S]*?)--- USER MESSAGE END ---/g;
 
@@ -135,14 +136,6 @@ export class KiroAuthFailureError extends Error {
 interface ResolvedKiroCredential {
   apiKey: string;
   mode: KiroCredentialMode;
-}
-
-function isRecord(value: unknown): value is JsonRecord {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function isKiroCliDefaultAgentInstruction(text: string): boolean {
@@ -402,18 +395,23 @@ function resolveMaxTokens(model: Model<Api>, options?: SimpleStreamOptions): num
   return Math.max(1, Math.min(requested, API_MAX_OUTPUT_TOKENS));
 }
 
-function getHeaderCaseInsensitive(headers: Record<string, string> | undefined, name: string): string | undefined {
+function getHeaderCaseInsensitive(headers: ProviderHeaders | undefined, name: string): string | undefined {
   if (!headers) return undefined;
   const normalizedName = name.toLowerCase();
   for (const [headerName, headerValue] of Object.entries(headers)) {
-    if (headerName.toLowerCase() === normalizedName && headerValue.trim()) return headerValue.trim();
+    if (headerName.toLowerCase() === normalizedName && typeof headerValue === "string" && headerValue.trim()) return headerValue.trim();
   }
   return undefined;
 }
 
-function omitInternalKiroHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+function omitInternalKiroHeaders(headers: ProviderHeaders | undefined): Record<string, string> | undefined {
   if (!headers) return undefined;
-  const filtered = Object.fromEntries(Object.entries(headers).filter(([headerName]) => headerName.toLowerCase() !== KIRO_PROFILE_ARN_HEADER));
+  const filtered = Object.fromEntries(
+    Object.entries(headers).filter(
+      (entry): entry is [string, string] =>
+        entry[0].toLowerCase() !== KIRO_PROFILE_ARN_HEADER && entry[1] !== null,
+    ),
+  );
   return Object.keys(filtered).length > 0 ? filtered : undefined;
 }
 
@@ -530,17 +528,6 @@ function responseHeadersToRecord(headers: Headers): Record<string, string> {
   return output;
 }
 
-async function readJsonResponse(response: Response): Promise<JsonRecord> {
-  const text = await response.text();
-  if (!text.trim()) return {};
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    return isRecord(parsed) ? parsed : { message: "Kiro returned a non-object JSON response." };
-  } catch {
-    return { message: text };
-  }
-}
-
 function extractErrorMessage(payload: JsonRecord, status: number): string {
   if (typeof payload.message === "string" && payload.message.trim()) return redactSensitiveString(payload.message.trim());
   if (typeof payload.error === "string" && payload.error.trim()) return redactSensitiveString(payload.error.trim());
@@ -618,95 +605,82 @@ function numberFrom(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function buildUsage(model: Model<Api>, tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }): Usage {
+  const usage: Usage = {
+    input: tokens.input,
+    output: tokens.output,
+    cacheRead: tokens.cacheRead,
+    cacheWrite: tokens.cacheWrite,
+    totalTokens: tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+  calculateCost(model, usage);
+  return usage;
+}
+
 function usageFromMetrics(model: Model<Api>, metrics: JsonRecord): Usage | undefined {
   const input = numberFrom(metrics.inputTokens);
   const output = numberFrom(metrics.outputTokens);
   const cacheRead = numberFrom(metrics.cacheReadTokens);
   const cacheWrite = numberFrom(metrics.cacheCreationTokens);
   if (input <= 0 && output <= 0 && cacheRead <= 0 && cacheWrite <= 0) return undefined;
-  const usage: Usage = {
-    input,
-    output,
-    cacheRead,
-    cacheWrite,
-    totalTokens: input + output + cacheRead + cacheWrite,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  };
-  calculateCost(model, usage);
-  return usage;
+  return buildUsage(model, { input, output, cacheRead, cacheWrite });
 }
 
 function estimatedUsage(model: Model<Api>, state: KiroStreamState): Usage | undefined {
   const output = state.totalContentLength > 0 ? Math.max(1, Math.floor(state.totalContentLength / 4)) : 0;
   const input = state.contextUsagePercentage > 0 ? Math.floor((state.contextUsagePercentage * model.contextWindow) / 100) : 0;
   if (input <= 0 && output <= 0) return undefined;
-  const usage: Usage = {
-    input,
-    output,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: input + output,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  };
-  calculateCost(model, usage);
-  return usage;
+  return buildUsage(model, { input, output, cacheRead: 0, cacheWrite: 0 });
 }
 
-function ensureTextBlock(stream: AssistantMessageEventStream, output: AssistantMessage, state: KiroStreamState): number {
-  if (state.textContentIndex !== undefined) return state.textContentIndex;
-  const contentIndex = output.content.length;
-  output.content.push({ type: "text", text: "" });
-  stream.push({ type: "text_start", contentIndex, partial: output });
-  state.textContentIndex = contentIndex;
-  return contentIndex;
-}
-
-function emitTextDelta(stream: AssistantMessageEventStream, output: AssistantMessage, state: KiroStreamState, text: string): void {
-  if (!text) return;
-  closeThinkingBlock(stream, output, state);
-  const contentIndex = ensureTextBlock(stream, output, state);
+function closeBlock(stream: AssistantMessageEventStream, output: AssistantMessage, state: KiroStreamState, kind: "text" | "thinking"): void {
+  const contentIndex = kind === "text" ? state.textContentIndex : state.thinkingContentIndex;
+  if (contentIndex === undefined) return;
   const block = output.content[contentIndex];
-  if (block?.type === "text") block.text += text;
-  state.hasText = true;
-  state.totalContentLength += text.length;
-  stream.push({ type: "text_delta", contentIndex, delta: text, partial: output });
-}
-
-function ensureThinkingBlock(stream: AssistantMessageEventStream, output: AssistantMessage, state: KiroStreamState): number {
-  if (state.thinkingContentIndex !== undefined) return state.thinkingContentIndex;
-  closeTextBlock(stream, output, state);
-  const contentIndex = output.content.length;
-  output.content.push({ type: "thinking", thinking: "" });
-  stream.push({ type: "thinking_start", contentIndex, partial: output });
-  state.thinkingContentIndex = contentIndex;
-  return contentIndex;
-}
-
-function emitThinkingDelta(stream: AssistantMessageEventStream, output: AssistantMessage, state: KiroStreamState, thinking: string): void {
-  if (!thinking) return;
-  const contentIndex = ensureThinkingBlock(stream, output, state);
-  const block = output.content[contentIndex];
-  if (block?.type === "thinking") block.thinking += thinking;
-  state.totalContentLength += thinking.length;
-  stream.push({ type: "thinking_delta", contentIndex, delta: thinking, partial: output });
-}
-
-function closeThinkingBlock(stream: AssistantMessageEventStream, output: AssistantMessage, state: KiroStreamState): void {
-  if (state.thinkingContentIndex === undefined) return;
-  const contentIndex = state.thinkingContentIndex;
-  const block = output.content[contentIndex];
-  const content = block?.type === "thinking" ? block.thinking : "";
-  stream.push({ type: "thinking_end", contentIndex, content, partial: output });
-  state.thinkingContentIndex = undefined;
+  let content = "";
+  if (kind === "text" && block?.type === "text") content = block.text;
+  else if (kind === "thinking" && block?.type === "thinking") content = block.thinking;
+  stream.push({ type: kind === "text" ? "text_end" : "thinking_end", contentIndex, content, partial: output });
+  if (kind === "text") state.textContentIndex = undefined;
+  else state.thinkingContentIndex = undefined;
 }
 
 function closeTextBlock(stream: AssistantMessageEventStream, output: AssistantMessage, state: KiroStreamState): void {
-  if (state.textContentIndex === undefined) return;
-  const contentIndex = state.textContentIndex;
+  closeBlock(stream, output, state, "text");
+}
+
+function closeThinkingBlock(stream: AssistantMessageEventStream, output: AssistantMessage, state: KiroStreamState): void {
+  closeBlock(stream, output, state, "thinking");
+}
+
+function ensureBlock(stream: AssistantMessageEventStream, output: AssistantMessage, state: KiroStreamState, kind: "text" | "thinking"): number {
+  const existingIndex = kind === "text" ? state.textContentIndex : state.thinkingContentIndex;
+  if (existingIndex !== undefined) return existingIndex;
+  const contentIndex = output.content.length;
+  if (kind === "text") {
+    output.content.push({ type: "text", text: "" });
+    stream.push({ type: "text_start", contentIndex, partial: output });
+    state.textContentIndex = contentIndex;
+  } else {
+    output.content.push({ type: "thinking", thinking: "" });
+    stream.push({ type: "thinking_start", contentIndex, partial: output });
+    state.thinkingContentIndex = contentIndex;
+  }
+  return contentIndex;
+}
+
+function emitDelta(stream: AssistantMessageEventStream, output: AssistantMessage, state: KiroStreamState, kind: "text" | "thinking", delta: string): void {
+  if (!delta) return;
+  if (kind === "text") closeThinkingBlock(stream, output, state);
+  else closeTextBlock(stream, output, state);
+  const contentIndex = ensureBlock(stream, output, state, kind);
   const block = output.content[contentIndex];
-  const content = block?.type === "text" ? block.text : "";
-  stream.push({ type: "text_end", contentIndex, content, partial: output });
-  state.textContentIndex = undefined;
+  if (kind === "text" && block?.type === "text") block.text += delta;
+  else if (kind === "thinking" && block?.type === "thinking") block.thinking += delta;
+  if (kind === "text") state.hasText = true;
+  state.totalContentLength += delta.length;
+  stream.push({ type: kind === "text" ? "text_delta" : "thinking_delta", contentIndex, delta, partial: output });
 }
 
 function parseStreamingToolInput(toolCall: ToolCall, existingInputBuffer: string, rawInput: unknown): { delta: string; inputBuffer: string } {
@@ -822,11 +796,11 @@ function handleEvent(stream: AssistantMessageEventStream, output: AssistantMessa
   if (!payload) return;
   captureResponseId(output, payload);
   if (eventType === "assistantResponseEvent" || eventType === "codeEvent") {
-    emitTextDelta(stream, output, state, getPayloadText(payload, ["content", "text"]));
+    emitDelta(stream, output, state, "text", getPayloadText(payload, ["content", "text"]));
     return;
   }
   if (eventType === "reasoningContentEvent") {
-    emitThinkingDelta(stream, output, state, getReasoningPayloadText(payload));
+    emitDelta(stream, output, state, "thinking", getReasoningPayloadText(payload));
     return;
   }
   if (eventType === "meteringEvent") {
@@ -914,7 +888,7 @@ async function executeKiroRequest(
     await options?.onResponse?.({ status: response.status, headers: responseHeadersToRecord(response.headers) }, model);
 
     if (!response.ok) {
-      const errorPayload = await readJsonResponse(response);
+      const errorPayload = await readJsonResponse(response, "Kiro returned a non-object JSON response.");
       throw classifyKiroHttpFailure(response.status, errorPayload, credential.mode, config.providerId);
     }
 

@@ -3,49 +3,42 @@ import { fileURLToPath } from "node:url";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Api, AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { registerOAuthProvider, type OAuthCredentials, type OAuthLoginCallbacks, type OAuthProviderInterface } from "@earendil-works/pi-ai/oauth";
+import { registerOAuthProvider } from "@earendil-works/pi-ai/oauth";
 
-import { KIRO_API, type ExtensionConfig, type KiroOAuthConfig, loadConfig } from "./config.js";
+import { KIRO_API, type ExtensionConfig, loadConfig } from "./config.js";
 import { DebugLogger } from "./debug-logger.js";
 import type { DebugLogger as DebugLoggerInstance } from "./debug-logger.js";
 import { omitAuthorizationHeaders } from "./headers.js";
+import { createKiroOAuthProvider } from "./oauth.js";
 
 const EXTENSION_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const RUNTIME_PROVIDER_REGISTRATION_EVENT = "pi-multi-auth:runtime-provider-registration";
 const MULTI_AUTH_PROVIDERS_REGISTERED_EVENT = "pi-multi-auth:providers-registered";
-const KIRO_PROFILE_ARN_HEADER = "x-kiro-profile-arn";
 
 type KiroRuntimeState = { cwd?: string };
 type KiroStreamModule = typeof import("./kiro.js");
-type KiroOAuthModule = typeof import("./oauth.js");
 type KiroStreamSimple = (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 
-let kiroStreamModule: KiroStreamModule | undefined;
-let kiroStreamModulePromise: Promise<KiroStreamModule> | undefined;
-let kiroOAuthModule: KiroOAuthModule | undefined;
-let kiroOAuthModulePromise: Promise<KiroOAuthModule> | undefined;
-
-function loadKiroStreamModule(): Promise<KiroStreamModule> {
-  if (kiroStreamModule) return Promise.resolve(kiroStreamModule);
-  kiroStreamModulePromise ??= import("./kiro.js").then((module) => {
-    kiroStreamModule = module;
-    return module;
-  });
-  return kiroStreamModulePromise;
+function createLazyModule<T>(importer: () => Promise<T>): { load(): Promise<T> } {
+  let loaded: T | undefined;
+  let promise: Promise<T> | undefined;
+  return {
+    load(): Promise<T> {
+      if (loaded) return Promise.resolve(loaded);
+      promise ??= importer().then((module) => {
+        loaded = module;
+        return module;
+      });
+      return promise;
+    },
+  };
 }
 
-function loadKiroOAuthModule(): Promise<KiroOAuthModule> {
-  if (kiroOAuthModule) return Promise.resolve(kiroOAuthModule);
-  kiroOAuthModulePromise ??= import("./oauth.js").then((module) => {
-    kiroOAuthModule = module;
-    return module;
-  });
-  return kiroOAuthModulePromise;
-}
+const kiroStreamLoader = createLazyModule<KiroStreamModule>(() => import("./kiro.js"));
 
 function createLazyKiroStream(config: ExtensionConfig, runtime: KiroRuntimeState, logger: DebugLoggerInstance): KiroStreamSimple {
   return (model, context, options) => {
-    const streamPromise = loadKiroStreamModule()
+    const streamPromise = kiroStreamLoader.load()
       .then(({ createKiroStream }) => createKiroStream(config, runtime, logger)(model, context, options));
     streamPromise.catch(() => undefined);
 
@@ -69,61 +62,6 @@ function createLazyKiroStream(config: ExtensionConfig, runtime: KiroRuntimeState
   };
 }
 
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function profileArnFromCredentials(credentials: OAuthCredentials): string | undefined {
-  const profileArn = nonEmptyString(credentials.profileArn);
-  if (profileArn) return profileArn;
-  const request = credentials.request;
-  if (!request || typeof request !== "object" || Array.isArray(request)) return undefined;
-  const headers = (request as { headers?: unknown }).headers;
-  if (!headers || typeof headers !== "object" || Array.isArray(headers)) return undefined;
-  for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
-    if (key.toLowerCase() === KIRO_PROFILE_ARN_HEADER && typeof value === "string" && value.trim()) return value.trim();
-  }
-  return undefined;
-}
-
-function createLazyKiroOAuthProvider(config: KiroOAuthConfig, logger: DebugLoggerInstance, options: { providerId?: string; displayName?: string } = {}): OAuthProviderInterface {
-  const providerId = nonEmptyString(options.providerId) ?? nonEmptyString(config.providerId) ?? "kiro";
-  const displayName = nonEmptyString(options.displayName) ?? "Kiro";
-  let oauthProvider: OAuthProviderInterface | undefined;
-  let oauthProviderPromise: Promise<OAuthProviderInterface> | undefined;
-
-  const loadProvider = (): Promise<OAuthProviderInterface> => {
-    if (oauthProvider) return Promise.resolve(oauthProvider);
-    oauthProviderPromise ??= loadKiroOAuthModule().then(({ createKiroOAuthProvider }) => {
-      oauthProvider = createKiroOAuthProvider(config, logger, { providerId, displayName });
-      return oauthProvider;
-    });
-    return oauthProviderPromise;
-  };
-
-  return {
-    id: providerId,
-    name: displayName,
-    async login(callbacks: OAuthLoginCallbacks) {
-      return (await loadProvider()).login(callbacks);
-    },
-    async refreshToken(credentials: OAuthCredentials) {
-      return (await loadProvider()).refreshToken(credentials);
-    },
-    getApiKey(credentials: OAuthCredentials) {
-      return credentials.access;
-    },
-    modifyModels(models, credentials) {
-      const profileArn = profileArnFromCredentials(credentials);
-      if (!profileArn) return models;
-      return models.map((model) => ({
-        ...model,
-        headers: { ...(model.headers ?? {}), [KIRO_PROFILE_ARN_HEADER]: profileArn },
-      }));
-    },
-  };
-}
-
 export default function kiroProviderExtension(pi: ExtensionAPI): void {
   const { config, warnings } = loadConfig(EXTENSION_ROOT);
   const logger = new DebugLogger({ extensionRoot: EXTENSION_ROOT, debug: config.debug });
@@ -134,7 +72,7 @@ export default function kiroProviderExtension(pi: ExtensionAPI): void {
     return;
   }
 
-  const oauthProvider = createLazyKiroOAuthProvider(config.oauth, logger, {
+  const oauthProvider = createKiroOAuthProvider(config.oauth, logger, {
     providerId: config.providerId,
     displayName: config.displayName,
   });

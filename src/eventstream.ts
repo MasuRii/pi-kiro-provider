@@ -1,6 +1,7 @@
 import type { DebugLogger } from "./debug-logger.js";
+import { isRecord, type JsonRecord } from "./shared/index.js";
 
-export type JsonRecord = Record<string, unknown>;
+export type { JsonRecord };
 
 export interface EventFrame {
   headers: Record<string, string>;
@@ -79,10 +80,6 @@ export function crc32(buf: Uint8Array): number {
     crc = CRC32_TABLE[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8);
   }
   return (crc ^ 0xffffffff) >>> 0;
-}
-
-function isRecord(value: unknown): value is JsonRecord {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 export function parseEventFrame(data: Uint8Array, logger: DebugLogger): EventFrame | null {

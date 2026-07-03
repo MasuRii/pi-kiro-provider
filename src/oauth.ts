@@ -6,8 +6,7 @@ import type { OAuthCredentials, OAuthLoginCallbacks, OAuthProviderInterface } fr
 import type { KiroAuthMethod, KiroOAuthConfig } from "./config.js";
 import { redactSensitiveString } from "./debug-logger.js";
 import type { DebugLogger } from "./debug-logger.js";
-
-interface JsonRecord extends Record<string, unknown> {}
+import { isRecord, nonEmptyString, type JsonRecord, positiveFiniteNumber as numericSeconds, KIRO_PROFILE_ARN_HEADER, readJsonResponse, applyProfileArnToModels, resolveOAuthProviderIdentity } from "./shared/index.js";
 
 interface KiroCredentials extends OAuthCredentials {
   clientId?: string;
@@ -56,7 +55,6 @@ const DEFAULT_SOCIAL_PORTAL_URL = "https://app.kiro.dev/signin";
 const DEFAULT_SOCIAL_PORTAL_REDIRECT_URI = "http://localhost:3128";
 const DEFAULT_SOCIAL_CALLBACK_PATH = "/oauth/callback";
 const DEFAULT_SOCIAL_CALLBACK_PORT_SPAN = 20;
-const KIRO_PROFILE_ARN_HEADER = "x-kiro-profile-arn";
 const LOCAL_CALLBACK_SUCCESS_HTML = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Kiro authentication complete</title></head><body><h1>Kiro authentication complete</h1><p>You can return to Pi.</p></body></html>";
 const LOCAL_CALLBACK_ERROR_HTML = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Kiro authentication failed</title></head><body><h1>Kiro authentication failed</h1><p>Return to Pi and paste the callback URL manually.</p></body></html>";
 
@@ -66,18 +64,6 @@ interface LocalCallbackServerHandle {
   waitForCallback(): Promise<string | null>;
   cancelWait(): void;
   close(): Promise<void>;
-}
-
-function isRecord(value: unknown): value is JsonRecord {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function numericSeconds(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 function positiveInteger(value: unknown, fallback: number): number {
@@ -149,25 +135,48 @@ async function fetchOAuthWithTimeout(input: RequestInfo | URL, init: RequestInit
   }
 }
 
-async function readJsonResponse(response: Response): Promise<JsonRecord> {
-  const text = await response.text();
-  if (!text.trim()) return {};
+const OIDC_JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
+const SOCIAL_JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json", "User-Agent": "Kiro-CLI" };
+const OAUTH_NON_OBJECT_MESSAGE = "Kiro OAuth returned a non-object JSON response.";
+
+type OAuthFailureFactory = (input: {
+  cause?: unknown;
+  status?: number;
+  body?: JsonRecord;
+  reason?: KiroOAuthFailureDetails["reason"];
+  permanent?: boolean;
+}) => KiroOAuthFailureError;
+
+async function postJson(
+  config: Pick<KiroOAuthConfig, "requestTimeoutMs"> | undefined,
+  url: string,
+  headers: Record<string, string>,
+  payload: unknown,
+  failure: OAuthFailureFactory,
+  acceptBody?: (body: JsonRecord, response: Response) => boolean,
+): Promise<JsonRecord> {
+  let response: Response;
   try {
-    const parsed = JSON.parse(text) as unknown;
-    return isRecord(parsed) ? parsed : { message: "Kiro OAuth returned a non-object JSON response." };
-  } catch {
-    return { message: text };
+    response = await fetchOAuthWithTimeout(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    }, config);
+  } catch (error) {
+    throw failure({ cause: error, reason: "request_failed", permanent: false });
   }
+  const body = await readJsonResponse(response, OAUTH_NON_OBJECT_MESSAGE);
+  const accepted = acceptBody ? acceptBody(body, response) : response.ok;
+  if (!accepted) throw failure({ status: response.status, body });
+  return body;
 }
 
-function oauthErrorCode(body: JsonRecord | undefined): string | undefined {
+function oauthErrorParts(body: JsonRecord | undefined): { code?: string; description?: string } {
   const nested = isRecord(body?.error) ? body.error : undefined;
-  return nonEmptyString(body?.error) ?? nonEmptyString(nested?.code) ?? nonEmptyString(nested?.type);
-}
-
-function oauthErrorDescription(body: JsonRecord | undefined): string | undefined {
-  const nested = isRecord(body?.error) ? body.error : undefined;
-  return nonEmptyString(body?.error_description) ?? nonEmptyString(body?.message) ?? nonEmptyString(nested?.message);
+  return {
+    code: nonEmptyString(body?.error) ?? nonEmptyString(nested?.code) ?? nonEmptyString(nested?.type),
+    description: nonEmptyString(body?.error_description) ?? nonEmptyString(body?.message) ?? nonEmptyString(nested?.message),
+  };
 }
 
 function classifyOAuthReason(flow: KiroOAuthFlow, status: number | undefined, errorCode: string | undefined, description: string | undefined): Pick<KiroOAuthFailureDetails, "reason" | "permanent"> {
@@ -203,8 +212,7 @@ export function classifyKiroOAuthFailure(
     permanent?: boolean;
   },
 ): KiroOAuthFailureError {
-  const errorCode = oauthErrorCode(input.body);
-  const description = oauthErrorDescription(input.body);
+  const { code: errorCode, description } = oauthErrorParts(input.body);
   const classified = input.reason && input.permanent !== undefined ? { reason: input.reason, permanent: input.permanent } : classifyOAuthReason(flow, input.status, errorCode, description);
   const details: KiroOAuthFailureDetails = {
     providerId: input.providerId ?? "kiro",
@@ -243,62 +251,35 @@ async function registerClient(config: KiroOAuthConfig): Promise<{ clientId: stri
   };
   if (config.issuerUrl && !config.skipIssuerUrlForRegistration) payload.issuerUrl = config.issuerUrl;
 
-  let response: Response;
-  try {
-    response = await fetchOAuthWithTimeout(endpoint(config.region, "client/register"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(payload),
-    }, config);
-  } catch (error) {
-    throw configuredKiroOAuthFailure(config, "login", "Kiro client registration failed", { cause: error, reason: "request_failed", permanent: false });
-  }
-  const body = await readJsonResponse(response);
-  if (!response.ok) throw configuredKiroOAuthFailure(config, "login", "Kiro client registration failed", { status: response.status, body });
+  const failure: OAuthFailureFactory = (input) => configuredKiroOAuthFailure(config, "login", "Kiro client registration failed", input);
+  const body = await postJson(config, endpoint(config.region, "client/register"), OIDC_JSON_HEADERS, payload, failure);
 
   const clientId = nonEmptyString(body.clientId);
   const clientSecret = nonEmptyString(body.clientSecret);
-  if (!clientId || !clientSecret) throw configuredKiroOAuthFailure(config, "login", "Kiro client registration failed", { reason: "missing_required_fields", permanent: false });
+  if (!clientId || !clientSecret) throw failure({ reason: "missing_required_fields", permanent: false });
   return { clientId, clientSecret };
 }
 
 async function requestDeviceCode(config: KiroOAuthConfig, client: { clientId: string; clientSecret: string }): Promise<JsonRecord> {
-  let response: Response;
-  try {
-    response = await fetchOAuthWithTimeout(endpoint(config.region, "device_authorization"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ clientId: client.clientId, clientSecret: client.clientSecret, startUrl: config.startUrl }),
-    }, config);
-  } catch (error) {
-    throw configuredKiroOAuthFailure(config, "login", "Kiro device authorization failed", { cause: error, reason: "request_failed", permanent: false });
-  }
-  const body = await readJsonResponse(response);
-  if (!response.ok) throw configuredKiroOAuthFailure(config, "login", "Kiro device authorization failed", { status: response.status, body });
-  return body;
+  const failure: OAuthFailureFactory = (input) => configuredKiroOAuthFailure(config, "login", "Kiro device authorization failed", input);
+  return postJson(config, endpoint(config.region, "device_authorization"), OIDC_JSON_HEADERS, { clientId: client.clientId, clientSecret: client.clientSecret, startUrl: config.startUrl }, failure);
 }
 
 async function pollDeviceToken(config: KiroOAuthConfig, client: { clientId: string; clientSecret: string }, deviceCode: string): Promise<JsonRecord> {
-  let response: Response;
-  try {
-    response = await fetchOAuthWithTimeout(endpoint(config.region, "token"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
-        clientId: client.clientId,
-        clientSecret: client.clientSecret,
-        deviceCode,
-        grantType: "urn:ietf:params:oauth:grant-type:device_code",
-      }),
-    }, config);
-  } catch (error) {
-    throw configuredKiroOAuthFailure(config, "login", "Kiro token polling failed", { cause: error, reason: "request_failed", permanent: false });
-  }
-  const body = await readJsonResponse(response);
-  if (!response.ok && body.error !== "authorization_pending" && body.error !== "slow_down") {
-    throw configuredKiroOAuthFailure(config, "login", "Kiro token polling failed", { status: response.status, body });
-  }
-  return body;
+  const failure: OAuthFailureFactory = (input) => configuredKiroOAuthFailure(config, "login", "Kiro token polling failed", input);
+  return postJson(
+    config,
+    endpoint(config.region, "token"),
+    OIDC_JSON_HEADERS,
+    {
+      clientId: client.clientId,
+      clientSecret: client.clientSecret,
+      deviceCode,
+      grantType: "urn:ietf:params:oauth:grant-type:device_code",
+    },
+    failure,
+    (body, response) => response.ok || body.error === "authorization_pending" || body.error === "slow_down",
+  );
 }
 
 function wait(ms: number, signal?: AbortSignal): Promise<void> {
@@ -508,22 +489,24 @@ async function selectAuthMethod(config: KiroOAuthConfig, callbacks: OAuthLoginCa
   return selected;
 }
 
+function applyPkceParams(url: URL, codeChallenge: string, state: string): void {
+  url.searchParams.set("code_challenge", codeChallenge);
+  url.searchParams.set("code_challenge_method", "S256");
+  url.searchParams.set("state", state);
+}
+
 function buildLegacySocialAuthorizeUrl(config: KiroOAuthConfig, authMethod: (typeof SOCIAL_AUTH_METHODS)[number], codeChallenge: string, state: string, redirectUri: string): string {
   const url = new URL(config.socialAuthorizeUrl);
   url.searchParams.set("idp", SOCIAL_IDP_BY_METHOD[authMethod]);
   url.searchParams.set("redirect_uri", redirectUri);
-  url.searchParams.set("code_challenge", codeChallenge);
-  url.searchParams.set("code_challenge_method", "S256");
-  url.searchParams.set("state", state);
+  applyPkceParams(url, codeChallenge, state);
   url.searchParams.set("prompt", "select_account");
   return url.toString();
 }
 
 function buildPortalAuthorizeUrl(config: KiroOAuthConfig, codeChallenge: string, state: string, redirectBaseUri: string): string {
   const url = new URL(configString(config, "socialPortalUrl", DEFAULT_SOCIAL_PORTAL_URL));
-  url.searchParams.set("state", state);
-  url.searchParams.set("code_challenge", codeChallenge);
-  url.searchParams.set("code_challenge_method", "S256");
+  applyPkceParams(url, codeChallenge, state);
   url.searchParams.set("redirect_uri", redirectBaseUri);
   url.searchParams.set("redirect_from", "kirocli");
   return url.toString();
@@ -587,36 +570,13 @@ function buildProfileRequestOverride(profileArn: string | undefined): { request?
   return profileArn ? { request: { headers: { [KIRO_PROFILE_ARN_HEADER]: profileArn } } } : {};
 }
 
-function profileArnFromCredentials(credentials: OAuthCredentials): string | undefined {
-  const profileArn = nonEmptyString((credentials as KiroCredentials).profileArn);
-  if (profileArn) return profileArn;
-  const request = credentials.request;
-  if (!request || typeof request !== "object" || Array.isArray(request)) return undefined;
-  const headers = (request as { headers?: unknown }).headers;
-  if (!headers || typeof headers !== "object" || Array.isArray(headers)) return undefined;
-  for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
-    if (key.toLowerCase() === KIRO_PROFILE_ARN_HEADER && typeof value === "string" && value.trim()) return value.trim();
-  }
-  return undefined;
-}
-
 async function exchangeSocialCode(config: KiroOAuthConfig, authMethod: (typeof SOCIAL_AUTH_METHODS)[number], code: string, codeVerifier: string, redirectUri: string): Promise<KiroCredentials> {
-  let response: Response;
-  try {
-    response = await fetchOAuthWithTimeout(config.socialTokenUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json", "User-Agent": "Kiro-CLI" },
-      body: JSON.stringify({ code, code_verifier: codeVerifier, redirect_uri: redirectUri }),
-    }, config);
-  } catch (error) {
-    throw configuredKiroOAuthFailure(config, "login", "Kiro social token exchange failed", { cause: error, reason: "request_failed", permanent: false });
-  }
-  const body = await readJsonResponse(response);
-  if (!response.ok) throw configuredKiroOAuthFailure(config, "login", "Kiro social token exchange failed", { status: response.status, body });
+  const failure: OAuthFailureFactory = (input) => configuredKiroOAuthFailure(config, "login", "Kiro social token exchange failed", input);
+  const body = await postJson(config, config.socialTokenUrl, SOCIAL_JSON_HEADERS, { code, code_verifier: codeVerifier, redirect_uri: redirectUri }, failure);
 
   const access = responseString(body, "accessToken", "access_token");
   const refresh = responseString(body, "refreshToken", "refresh_token");
-  if (!access || !refresh) throw configuredKiroOAuthFailure(config, "login", "Kiro social token exchange failed", { reason: "missing_required_fields", permanent: false });
+  if (!access || !refresh) throw failure({ reason: "missing_required_fields", permanent: false });
   const profileArn = responseString(body, "profileArn", "profile_arn");
   return {
     access,
@@ -692,21 +652,11 @@ async function refreshWithOidc(credentials: KiroCredentials, providerId: string,
   const clientSecret = nonEmptyString(credentials.clientSecret);
   if (!clientId || !clientSecret) throw classifyKiroOAuthFailure("refresh", "Kiro OIDC refresh requires client metadata", { providerId, reason: "missing_client_metadata", permanent: true });
 
-  let response: Response;
-  try {
-    response = await fetchOAuthWithTimeout(endpoint(region, "token"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ clientId, clientSecret, refreshToken: credentials.refresh, grantType: "refresh_token" }),
-    }, config);
-  } catch (error) {
-    throw classifyKiroOAuthFailure("refresh", "Kiro token refresh failed", { providerId, cause: error, reason: "request_failed", permanent: false });
-  }
-  const body = await readJsonResponse(response);
-  if (!response.ok) throw classifyKiroOAuthFailure("refresh", "Kiro token refresh failed", { providerId, status: response.status, body });
+  const failure: OAuthFailureFactory = (input) => classifyKiroOAuthFailure("refresh", "Kiro token refresh failed", { ...input, providerId });
+  const body = await postJson(config, endpoint(region, "token"), OIDC_JSON_HEADERS, { clientId, clientSecret, refreshToken: credentials.refresh, grantType: "refresh_token" }, failure);
 
   const access = nonEmptyString(body.accessToken);
-  if (!access) throw classifyKiroOAuthFailure("refresh", "Kiro token refresh failed", { providerId, reason: "missing_required_fields", permanent: false });
+  if (!access) throw failure({ reason: "missing_required_fields", permanent: false });
   return {
     ...credentials,
     access,
@@ -717,21 +667,11 @@ async function refreshWithOidc(credentials: KiroCredentials, providerId: string,
 }
 
 async function refreshWithSocialEndpoint(config: KiroOAuthConfig, credentials: KiroCredentials, authMethod: (typeof SOCIAL_AUTH_METHODS)[number]): Promise<KiroCredentials> {
-  let response: Response;
-  try {
-    response = await fetchOAuthWithTimeout(config.socialRefreshUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json", "User-Agent": "Kiro-CLI" },
-      body: JSON.stringify({ refreshToken: credentials.refresh }),
-    }, config);
-  } catch (error) {
-    throw configuredKiroOAuthFailure(config, "refresh", "Kiro social token refresh failed", { cause: error, reason: "request_failed", permanent: false });
-  }
-  const body = await readJsonResponse(response);
-  if (!response.ok) throw configuredKiroOAuthFailure(config, "refresh", "Kiro social token refresh failed", { status: response.status, body });
+  const failure: OAuthFailureFactory = (input) => configuredKiroOAuthFailure(config, "refresh", "Kiro social token refresh failed", input);
+  const body = await postJson(config, config.socialRefreshUrl, SOCIAL_JSON_HEADERS, { refreshToken: credentials.refresh }, failure);
 
   const access = responseString(body, "accessToken", "access_token");
-  if (!access) throw configuredKiroOAuthFailure(config, "refresh", "Kiro social token refresh failed", { reason: "missing_required_fields", permanent: false });
+  if (!access) throw failure({ reason: "missing_required_fields", permanent: false });
   const profileArn = responseString(body, "profileArn", "profile_arn") ?? credentials.profileArn;
   return {
     ...credentials,
@@ -751,8 +691,7 @@ export interface KiroOAuthProviderOptions {
 }
 
 export function createKiroOAuthProvider(config: KiroOAuthConfig, logger: DebugLogger, options: KiroOAuthProviderOptions = {}): OAuthProviderInterface {
-  const providerId = nonEmptyString(options.providerId) ?? nonEmptyString(config.providerId) ?? "kiro";
-  const displayName = nonEmptyString(options.displayName) ?? "Kiro";
+  const { providerId, displayName } = resolveOAuthProviderIdentity(options, config);
   const providerConfig: KiroOAuthConfig = { ...config, providerId };
   return {
     id: providerId,
@@ -771,13 +710,6 @@ export function createKiroOAuthProvider(config: KiroOAuthConfig, logger: DebugLo
     getApiKey(credentials) {
       return credentials.access;
     },
-    modifyModels(models, credentials) {
-      const profileArn = profileArnFromCredentials(credentials);
-      if (!profileArn) return models;
-      return models.map((model) => ({
-        ...model,
-        headers: { ...(model.headers ?? {}), [KIRO_PROFILE_ARN_HEADER]: profileArn },
-      }));
-    },
+    modifyModels: applyProfileArnToModels,
   };
 }
