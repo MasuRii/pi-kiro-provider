@@ -495,6 +495,9 @@ export function buildHeaders(config: ExtensionConfig, apiKey: string, options?: 
     ...omitAuthorizationHeaders(omitInternalKiroHeaders(config.headers)),
     ...omitAuthorizationHeaders(omitInternalKiroHeaders(options?.headers)),
   };
+  // CodeWhisperer rejects Kiro API keys (ksk_ prefix) unless the token
+  // type is declared; OAuth bearer tokens are unaffected by this header.
+  if (apiKey.startsWith("ksk_")) headers.tokentype = "API_KEY";
   headers.Authorization = `Bearer ${apiKey}`;
   return headers;
 }
